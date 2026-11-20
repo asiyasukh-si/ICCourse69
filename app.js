@@ -63,6 +63,15 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+function formatHours(num) {
+  if (!num || num <= 0) return '-';
+  return Number(num.toFixed(2)).toString();
+}
+
+function formatHoursZero(num) {
+  return Number((num || 0).toFixed(2)).toString();
+}
+
 function showToast(msg) {
   els.toast.textContent = msg;
   els.toast.classList.remove('hidden');
@@ -74,6 +83,13 @@ function showToast(msg) {
 
 function getInstructorName(row) {
   return String(row.responsible_instructor || row.instructor_name || '').trim();
+}
+
+function parseTopicInstructors(raw) {
+  return String(raw || '')
+    .split(/[,;]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function splitInstructorsByRole(rows) {
@@ -95,6 +111,43 @@ function splitInstructorsByRole(rows) {
   });
 
   return { coordinators, lecturers };
+}
+
+function buildTeachingLoadSummary(contents) {
+  const map = {};
+  let hasSharedTopic = false;
+  let grandTotalHours = 0;
+
+  (contents || []).forEach((item) => {
+    const lec = parseFloat(item.lecture_hours) || 0;
+    const lab = parseFloat(item.lab_hours) || 0;
+    grandTotalHours += lec + lab;
+
+    const names = parseTopicInstructors(item.topic_instructor);
+    const assigned = names.length > 0 ? names : ['ยังไม่ระบุผู้สอน'];
+    if (assigned.length > 1) hasSharedTopic = true;
+
+    const shareLec = lec / assigned.length;
+    const shareLab = lab / assigned.length;
+
+    assigned.forEach((name) => {
+      if (!map[name]) {
+        map[name] = { name, topicCount: 0, lec: 0, lab: 0, total: 0 };
+      }
+      map[name].topicCount += 1;
+      map[name].lec += shareLec;
+      map[name].lab += shareLab;
+      map[name].total += shareLec + shareLab;
+    });
+  });
+
+  const rows = Object.values(map).sort((a, b) => {
+    if (a.name === 'ยังไม่ระบุผู้สอน') return 1;
+    if (b.name === 'ยังไม่ระบุผู้สอน') return -1;
+    return b.total - a.total || a.name.localeCompare(b.name, 'th');
+  });
+
+  return { rows, hasSharedTopic, grandTotalHours };
 }
 
 async function loadAllData() {
@@ -138,6 +191,7 @@ async function loadAllData() {
       .map((course) => {
         const id = String(course.course_id).trim();
         const courseClos = state.closByCourse[id] || [];
+        const courseContents = state.contentsByCourse[id] || [];
         const ploFlags = {
           PLO1: courseClos.some((c) => isTrue(c.PLO1)),
           PLO2: courseClos.some((c) => isTrue(c.PLO2)),
@@ -148,7 +202,12 @@ async function loadAllData() {
         };
         const activePlos = Object.keys(ploFlags).filter((k) => ploFlags[k]);
         const { coordinators, lecturers } = splitInstructorsByRole(state.instructorsByCourse[id]);
-        const allInstructorNames = [...coordinators, ...lecturers].map((i) => i.name);
+        const topicInstructorNames = courseContents.flatMap((item) =>
+          parseTopicInstructors(item.topic_instructor)
+        );
+        const allInstructorNames = Array.from(
+          new Set([...coordinators.map((i) => i.name), ...lecturers.map((i) => i.name), ...topicInstructorNames])
+        );
 
         return {
           ...course,
@@ -356,6 +415,13 @@ function renderCourseDetail(courseId) {
       const lab = parseFloat(item.lab_hours) || 0;
       sumLec += lec;
       sumLab += lab;
+
+      const topicInstructors = parseTopicInstructors(item.topic_instructor);
+      const instructorBadges =
+        topicInstructors.length > 0
+          ? topicInstructors.map((name) => `<span class="instructor-pill">${escapeHtml(name)}</span>`).join('')
+          : '<span style="color:#9ca3af;">-</span>';
+
       return `
         <tr>
           <td style="text-align:center;">${escapeHtml(item.topic_no)}</td>
@@ -363,8 +429,26 @@ function renderCourseDetail(courseId) {
             <div>${escapeHtml(item.topic_th)}</div>
             <div style="color:#6b7280;font-size:0.86rem;">${escapeHtml(item.topic_en)}</div>
           </td>
-          <td style="text-align:center;">${lec > 0 ? lec : '-'}</td>
-          <td style="text-align:center;">${lab > 0 ? lab : '-'}</td>
+          <td style="text-align:center;">${formatHours(lec)}</td>
+          <td style="text-align:center;">${formatHours(lab)}</td>
+          <td style="text-align:center;">${instructorBadges}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  const workload = buildTeachingLoadSummary(contents);
+  const workloadRowsHtml = workload.rows
+    .map((row) => {
+      const pct = workload.grandTotalHours > 0 ? ((row.total / workload.grandTotalHours) * 100).toFixed(1) : '0.0';
+      return `
+        <tr>
+          <td><strong>${escapeHtml(row.name)}</strong></td>
+          <td style="text-align:center;">${row.topicCount}</td>
+          <td style="text-align:center;">${formatHours(row.lec)}</td>
+          <td style="text-align:center;">${formatHours(row.lab)}</td>
+          <td style="text-align:center;font-weight:700;">${formatHoursZero(row.total)}</td>
+          <td style="text-align:center;">${pct}%</td>
         </tr>
       `;
     })
@@ -416,27 +500,63 @@ function renderCourseDetail(courseId) {
     </div>
 
     <div class="section-block">
-      <h3>เนื้อหากระบวนวิชาและจำนวนชั่วโมง (Course Contents)</h3>
+      <h3>เนื้อหากระบวนวิชา จำนวนชั่วโมง และอาจารย์ผู้สอนรายหัวข้อ (Course Contents)</h3>
       <div class="table-wrapper">
         <table class="data-table">
           <thead>
             <tr>
-              <th style="width:70px;text-align:center;">หัวข้อ</th>
+              <th style="width:65px;text-align:center;">หัวข้อ</th>
               <th>รายละเอียดเนื้อหา</th>
-              <th style="width:110px;text-align:center;">ชม. บรรยาย</th>
-              <th style="width:110px;text-align:center;">ชม. ปฏิบัติการ</th>
+              <th style="width:95px;text-align:center;">ชม. บรรยาย</th>
+              <th style="width:100px;text-align:center;">ชม. ปฏิบัติการ</th>
+              <th style="width:150px;text-align:center;">อาจารย์ผู้สอน</th>
             </tr>
           </thead>
           <tbody>
             ${contentRowsHtml}
             <tr style="background:#f8fafc;font-weight:700;">
               <td colspan="2" style="text-align:right;">รวมจำนวนชั่วโมงตลอดภาคการศึกษา</td>
-              <td style="text-align:center;">${sumLec}</td>
-              <td style="text-align:center;">${sumLab}</td>
+              <td style="text-align:center;">${formatHoursZero(sumLec)}</td>
+              <td style="text-align:center;">${formatHoursZero(sumLab)}</td>
+              <td style="text-align:center;">รวม ${formatHoursZero(sumLec + sumLab)} ชม.</td>
             </tr>
           </tbody>
         </table>
       </div>
+    </div>
+
+    <div class="section-block">
+      <h3>สรุปภาระชั่วโมงสอนรายบุคคลตามแผนการสอน (Teaching Load Summary)</h3>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>อาจารย์ผู้สอน</th>
+              <th style="width:110px;text-align:center;">จำนวนหัวข้อ</th>
+              <th style="width:110px;text-align:center;">ชม. บรรยาย</th>
+              <th style="width:110px;text-align:center;">ชม. ปฏิบัติการ</th>
+              <th style="width:110px;text-align:center;">รวมชั่วโมง</th>
+              <th style="width:100px;text-align:center;">สัดส่วน</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${workloadRowsHtml}
+            <tr style="background:#f8fafc;font-weight:700;">
+              <td>รวมทั้งหมด</td>
+              <td style="text-align:center;">${contents.length}</td>
+              <td style="text-align:center;">${formatHoursZero(sumLec)}</td>
+              <td style="text-align:center;">${formatHoursZero(sumLab)}</td>
+              <td style="text-align:center;">${formatHoursZero(workload.grandTotalHours)}</td>
+              <td style="text-align:center;">100%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      ${
+        workload.hasSharedTopic
+          ? '<p class="summary-note">* หมายเหตุ: หัวข้อที่มีผู้สอนร่วมกันมากกว่า 1 ท่าน ระบบคำนวณแบ่งชั่วโมงสอนเท่าๆ กันตามจำนวนผู้สอนในหัวข้อนั้น</p>'
+          : ''
+      }
     </div>
 
     <div class="approval-footer">
@@ -450,8 +570,21 @@ function copySyllabusText() {
   const course = state.courses.find((c) => c.course_id === state.selectedCourseId);
   if (!course) return;
   const clos = state.closByCourse[course.course_id] || [];
+  const contents = state.contentsByCourse[course.course_id] || [];
   const coordText = course.coordinators.length > 0 ? course.coordinators.map((i) => i.name).join(', ') : '-';
   const lectText = course.lecturers.length > 0 ? course.lecturers.map((i) => i.name).join(', ') : '-';
+
+  const contentLines = contents.map((item) => {
+    const lec = parseFloat(item.lecture_hours) || 0;
+    const lab = parseFloat(item.lab_hours) || 0;
+    const hrLabel = lec > 0 && lab > 0
+      ? `บรรยาย ${lec} ชม. / ปฏิบัติการ ${lab} ชม.`
+      : lec > 0
+        ? `บรรยาย ${lec} ชม.`
+        : `ปฏิบัติการ ${lab} ชม.`;
+    const inst = String(item.topic_instructor || '').trim();
+    return `${item.topic_no}. ${item.topic_th} (${hrLabel})${inst ? ` — ผู้สอน: ${inst}` : ''}`;
+  });
 
   const text = [
     `${course.course_code_th} (${course.course_id}) ${course.title_th} ${course.credit_structure}`,
@@ -470,7 +603,10 @@ function copySyllabusText() {
     ...clos.map((c, idx) => `${idx + 1}. ${c.clo_description_th}`),
     '',
     'Course Learning Outcomes (CLOs): Students are able to',
-    ...clos.map((c, idx) => `${idx + 1}. ${c.clo_description_en}`)
+    ...clos.map((c, idx) => `${idx + 1}. ${c.clo_description_en}`),
+    '',
+    'เนื้อหากระบวนวิชาและอาจารย์ผู้สอน:',
+    ...contentLines
   ].join('\n');
 
   navigator.clipboard.writeText(text).then(() => {
