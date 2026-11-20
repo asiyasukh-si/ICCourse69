@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ระบบสืบค้นข้อกำหนดกระบวนวิชา (OBE) — ภาควิชาเคมีอุตสาหกรรม</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+  <header class="app-header no-print">
+    <div class="container header-inner">
+      <div class="brand">
+        <h1>ระบบข้อกำหนดกระบวนวิชา (มคอ. 3 / OBE)</h1>
+        <p>หลักสูตรวิทยาศาสตรบัณฑิต สาขาวิชาเคมีอุตสาหกรรม (ฉบับปรับปรุง พ.ศ. 2569)</p>
+      </div>
+      <div class="header-actions">
+        <div class="view-tabs" role="tablist">
+          <button id="tabCourses" class="tab-btn active" type="button">รายการกระบวนวิชา</button>
+          <button id="tabMatrix" class="tab-btn" type="button">เมทริกซ์ PLO 1–6</button>
+        </div>
+        <button id="btnReload" class="btn-outline" type="button" title="โหลดข้อมูลล่าสุดจาก Google Sheets">รีเฟรชข้อมูล</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container main-content">
+    <!-- แถบสถานะการโหลด -->
+    <div id="loadingBanner" class="status-banner">กำลังดึงข้อมูลล่าสุดจากฐานข้อมูล Google Sheets...</div>
+    <div id="errorBanner" class="status-banner error hidden"></div>
+
+    <!-- มุมมองที่ 1: รายการกระบวนวิชา -->
+    <section id="viewCourses">
+      <div class="filter-bar no-print">
+        <div class="search-box">
+          <input
+            type="text"
+            id="searchInput"
+            placeholder="ค้นหารหัสวิชา (เช่น 403), ชื่อวิชาไทย-อังกฤษ, หรือชื่ออาจารย์..."
+            autocomplete="off"
+          />
+        </div>
+        <div class="filter-controls">
+          <select id="filterLevel" aria-label="กรองตามระดับชั้นปี">
+            <option value="">ทุกระดับวิชา</option>
+            <option value="2">ระดับ 2xx (ปี 2)</option>
+            <option value="3">ระดับ 3xx (ปี 3)</option>
+            <option value="4">ระดับ 4xx (ปี 4)</option>
+          </select>
+          <select id="filterType" aria-label="กรองตามลักษณะกระบวนวิชา">
+            <option value="">ทุกลักษณะวิชา</option>
+            <option value="บรรยาย">บรรยาย</option>
+            <option value="ปฏิบัติการ">ปฏิบัติการ</option>
+            <option value="สหกิจศึกษา">สหกิจศึกษา</option>
+          </select>
+          <select id="filterPlo" aria-label="กรองตาม PLO">
+            <option value="">ทุก PLO</option>
+            <option value="PLO1">เฉพาะ PLO 1</option>
+            <option value="PLO2">เฉพาะ PLO 2</option>
+            <option value="PLO3">เฉพาะ PLO 3</option>
+            <option value="PLO4">เฉพาะ PLO 4</option>
+            <option value="PLO5">เฉพาะ PLO 5</option>
+            <option value="PLO6">เฉพาะ PLO 6</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="summary-strip no-print">
+        <span id="courseCountText">พบ 0 กระบวนวิชา</span>
+        <span class="hint-text">คลิกที่รายวิชาเพื่อดูตาราง Constructive Alignment และเนื้อหารายชั่วโมง</span>
+      </div>
+
+      <div id="courseGrid" class="course-grid no-print"></div>
+    </section>
+
+    <!-- มุมมองที่ 2: เมทริกซ์ PLO 1-6 -->
+    <section id="viewMatrix" class="hidden">
+      <div class="matrix-header no-print">
+        <div>
+          <h2>ตารางความสอดคล้องภาพรวมหลักสูตร (Curriculum PLO Matrix)</h2>
+          <p>คลิกที่รหัสวิชาหรือชื่อวิชาเพื่อเปิดดูรายละเอียดข้อกำหนดกระบวนวิชา</p>
+        </div>
+        <button id="btnPrintMatrix" class="btn-primary" type="button">พิมพ์ / บันทึก PDF</button>
+      </div>
+      <div class="table-wrapper">
+        <table class="data-table matrix-table" id="ploMatrixTable">
+          <thead>
+            <tr>
+              <th>รหัสวิชา</th>
+              <th>ชื่อกระบวนวิชา</th>
+              <th>หน่วยกิต</th>
+              <th>PLO 1</th>
+              <th>PLO 2</th>
+              <th>PLO 3</th>
+              <th>PLO 4</th>
+              <th>PLO 5</th>
+              <th>PLO 6</th>
+            </tr>
+          </thead>
+          <tbody id="ploMatrixBody"></tbody>
+          <tfoot id="ploMatrixFoot"></tfoot>
+        </table>
+      </div>
+    </section>
+
+    <!-- มุมมองที่ 3: รายละเอียดกระบวนวิชา (Course Spec Detail) -->
+    <section id="viewDetail" class="hidden">
+      <div class="detail-toolbar no-print">
+        <button id="btnBack" class="btn-outline" type="button">← กลับหน้ารายการ</button>
+        <div class="detail-actions">
+          <button id="btnCopySyllabus" class="btn-secondary" type="button">คัดลอกข้อความทำ Syllabus</button>
+          <button id="btnPrintCourse" class="btn-primary" type="button">พิมพ์ / บันทึก PDF</button>
+        </div>
+      </div>
+      <article id="courseDetailContent" class="detail-paper"></article>
+    </section>
+  </main>
+
+  <!-- กล่องแจ้งเตือนมุมขวาล่าง -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
