@@ -9,6 +9,9 @@
   --border: #e5e7eb;
   --badge-bg: #e0f2fe;
   --badge-text: #0369a1;
+  --instructor-bg: #f0fdf4;
+  --instructor-text: #166534;
+  --instructor-border: #bbf7d0;
   --radius: 10px;
 }
 
@@ -317,6 +320,19 @@ body {
   font-weight: 500;
 }
 
+.instructor-pill {
+  display: inline-block;
+  background: var(--instructor-bg);
+  color: var(--instructor-text);
+  border: 1px solid var(--instructor-border);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  margin: 2px;
+  white-space: nowrap;
+}
+
 /* Tables & Matrix */
 .matrix-header {
   display: flex;
@@ -500,6 +516,12 @@ body {
 .method-list {
   margin: 0;
   padding-left: 18px;
+}
+
+.summary-note {
+  margin: 8px 0 0;
+  font-size: 0.84rem;
+  color: var(--muted);
 }
 
 .approval-footer {
