@@ -14,7 +14,6 @@ const state = {
   lastMainView: 'courses'
 };
 
-// Elements
 const els = {
   loadingBanner: document.getElementById('loadingBanner'),
   errorBanner: document.getElementById('errorBanner'),
@@ -73,6 +72,31 @@ function showToast(msg) {
   }, 2600);
 }
 
+function getInstructorName(row) {
+  return String(row.responsible_instructor || row.instructor_name || '').trim();
+}
+
+function splitInstructorsByRole(rows) {
+  const coordinators = [];
+  const lecturers = [];
+
+  (rows || []).forEach((row) => {
+    const name = getInstructorName(row);
+    if (!name) return;
+    const role = String(row.instructor_role || '').trim();
+    const term = String(row.academic_term || '').trim();
+    const entry = { name, term, role };
+
+    if (role.includes('ผู้รับผิดชอบ')) {
+      coordinators.push(entry);
+    } else {
+      lecturers.push(entry);
+    }
+  });
+
+  return { coordinators, lecturers };
+}
+
 async function loadAllData() {
   els.loadingBanner.classList.remove('hidden');
   els.errorBanner.classList.add('hidden');
@@ -123,16 +147,17 @@ async function loadAllData() {
           PLO6: courseClos.some((c) => isTrue(c.PLO6))
         };
         const activePlos = Object.keys(ploFlags).filter((k) => ploFlags[k]);
-        const instructorNames = (state.instructorsByCourse[id] || [])
-          .map((i) => i.responsible_instructor)
-          .filter(Boolean);
+        const { coordinators, lecturers } = splitInstructorsByRole(state.instructorsByCourse[id]);
+        const allInstructorNames = [...coordinators, ...lecturers].map((i) => i.name);
 
         return {
           ...course,
           course_id: id,
           ploFlags,
           activePlos,
-          instructorNames
+          coordinators,
+          lecturers,
+          allInstructorNames
         };
       })
       .sort((a, b) => a.course_id.localeCompare(b.course_id));
@@ -169,7 +194,7 @@ function getFilteredCourses() {
         c.course_code_en,
         c.title_th,
         c.title_en,
-        ...c.instructorNames
+        ...c.allInstructorNames
       ]
         .join(' ')
         .toLowerCase();
@@ -195,7 +220,8 @@ function renderCourseGrid() {
           ? c.activePlos.map((p) => `<span class="plo-pill">${p}</span>`).join('')
           : '<span class="plo-pill empty">ยังไม่ระบุ PLO</span>';
 
-      const instructorText = c.instructorNames.length > 0 ? c.instructorNames.join(', ') : '-';
+      const coordText = c.coordinators.length > 0 ? c.coordinators.map((i) => i.name).join(', ') : '-';
+      const lectText = c.lecturers.length > 0 ? c.lecturers.map((i) => i.name).join(', ') : '-';
 
       return `
         <div class="course-card" data-id="${escapeHtml(c.course_id)}">
@@ -207,7 +233,8 @@ function renderCourseGrid() {
           <p class="card-title-en">${escapeHtml(c.title_en)}</p>
           <div class="plo-badges">${ploHtml}</div>
           <div class="card-meta">
-            ผู้รับผิดชอบ: ${escapeHtml(instructorText)}
+            <div class="meta-row"><strong>ผู้รับผิดชอบ:</strong> ${escapeHtml(coordText)}</div>
+            <div class="meta-row"><strong>อาจารย์ผู้สอน:</strong> ${escapeHtml(lectText)}</div>
           </div>
         </div>
       `;
@@ -271,6 +298,17 @@ function formatMethodList(text) {
   return `<ul class="method-list">${items.map((i) => `<li>${escapeHtml(i)}</li>`).join('')}</ul>`;
 }
 
+function formatInstructorEntries(entries) {
+  if (!entries || entries.length === 0) return '-';
+  if (entries.length === 1) {
+    const e = entries[0];
+    return `${escapeHtml(e.name)}${e.term ? `<span class="term-tag">(${escapeHtml(e.term)})</span>` : ''}`;
+  }
+  return `<ul class="instructor-list">${entries
+    .map((e) => `<li>${escapeHtml(e.name)}${e.term ? `<span class="term-tag">(${escapeHtml(e.term)})</span>` : ''}</li>`)
+    .join('')}</ul>`;
+}
+
 function openCourseDetail(courseId) {
   state.selectedCourseId = courseId;
   renderCourseDetail(courseId);
@@ -284,16 +322,8 @@ function renderCourseDetail(courseId) {
   const course = state.courses.find((c) => c.course_id === courseId);
   if (!course) return;
 
-  const instructors = state.instructorsByCourse[courseId] || [];
   const clos = state.closByCourse[courseId] || [];
   const contents = state.contentsByCourse[courseId] || [];
-
-  const instructorHtml =
-    instructors.length > 0
-      ? instructors
-          .map((i) => `${escapeHtml(i.responsible_instructor)} (${escapeHtml(i.academic_term)})`)
-          .join('<br />')
-      : '-';
 
   const cloRowsHtml = clos
     .map((clo) => {
@@ -351,7 +381,8 @@ function renderCourseDetail(courseId) {
       <div class="info-item"><strong>หน่วยกิตและโครงสร้าง</strong>${escapeHtml(course.credit_structure)}</div>
       <div class="info-item"><strong>ลักษณะกระบวนวิชา</strong>${escapeHtml(course.course_type)} (${escapeHtml(course.grading_system)})</div>
       <div class="info-item"><strong>เงื่อนไขที่ต้องผ่านก่อน</strong>${escapeHtml(course.prerequisite_th || 'ไม่มี')}</div>
-      <div class="info-item"><strong>อาจารย์ผู้รับผิดชอบ</strong>${instructorHtml}</div>
+      <div class="info-item"><strong>อาจารย์ผู้รับผิดชอบกระบวนวิชา</strong>${formatInstructorEntries(course.coordinators)}</div>
+      <div class="info-item"><strong>อาจารย์ผู้สอน</strong>${formatInstructorEntries(course.lecturers)}</div>
     </div>
 
     <div class="section-block">
@@ -419,11 +450,15 @@ function copySyllabusText() {
   const course = state.courses.find((c) => c.course_id === state.selectedCourseId);
   if (!course) return;
   const clos = state.closByCourse[course.course_id] || [];
+  const coordText = course.coordinators.length > 0 ? course.coordinators.map((i) => i.name).join(', ') : '-';
+  const lectText = course.lecturers.length > 0 ? course.lecturers.map((i) => i.name).join(', ') : '-';
 
   const text = [
     `${course.course_code_th} (${course.course_id}) ${course.title_th} ${course.credit_structure}`,
     `${course.course_code_en} ${course.title_en}`,
     `เงื่อนไขที่ต้องผ่านก่อน: ${course.prerequisite_th || 'ไม่มี'}`,
+    `อาจารย์ผู้รับผิดชอบกระบวนวิชา: ${coordText}`,
+    `อาจารย์ผู้สอน: ${lectText}`,
     '',
     'คำอธิบายกระบวนวิชา:',
     course.description_th,
@@ -461,7 +496,6 @@ function switchMainView(viewName) {
   }
 }
 
-// Event Listeners
 els.tabCourses.addEventListener('click', () => switchMainView('courses'));
 els.tabMatrix.addEventListener('click', () => switchMainView('matrix'));
 els.btnReload.addEventListener('click', () => {
@@ -477,5 +511,4 @@ els.btnCopySyllabus.addEventListener('click', copySyllabusText);
 els.btnPrintCourse.addEventListener('click', () => window.print());
 els.btnPrintMatrix.addEventListener('click', () => window.print());
 
-// Start
 loadAllData();
