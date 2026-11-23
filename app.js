@@ -543,7 +543,7 @@ function renderPloMatrix() {
     .join('');
 
   els.ploMatrixFoot.innerHTML = `
-    <tr style="background:#f8fafc;font-weight:700;">
+    <tr style="background:linear-gradient(90deg, #faf5ff 0%, #fffdf2 100%);font-weight:700;">
       <td colspan="3">รวมจำนวนกระบวนวิชาที่รับผิดชอบในแต่ละ PLO (จาก ${state.courses.length} วิชา)</td>
       <td>${counts.PLO1}</td>
       <td>${counts.PLO2}</td>
@@ -710,7 +710,7 @@ function renderCourseDetail(courseId) {
 
   const semesterFilterBarHtml = isMultiSemCourse
     ? `
-      <div class="no-print" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px;padding:10px 14px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;">
+      <div class="no-print" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px;padding:10px 14px;background:linear-gradient(90deg, #faf5ff 0%, #fffdf2 100%);border:1px solid var(--border);border-radius:10px;">
         <strong style="font-size:0.88rem;color:var(--primary);">มุมมองภาคการศึกษา:</strong>
         <button type="button" class="${activeSem === 'ALL' ? 'btn-primary' : 'btn-outline'}" style="padding:5px 12px;font-size:0.84rem;" data-sem-btn="ALL">ทุกภาคการศึกษา (${escapeHtml(formatSemesterShort(course.offered_semesters))})</button>
         ${courseSems
@@ -792,7 +792,7 @@ function renderCourseDetail(courseId) {
           </thead>
           <tbody>
             ${contentRowsHtml}
-            <tr style="background:#f8fafc;font-weight:700;">
+            <tr style="background:linear-gradient(90deg, #faf5ff 0%, #fffdf2 100%);font-weight:700;">
               <td colspan="3" style="text-align:right;">รวมจำนวนชั่วโมงตามแผนการสอน (${escapeHtml(activeSem === 'ALL' ? formatSemesterShort(course.offered_semesters) : formatSemesterShort(activeSem))})</td>
               <td style="text-align:center;">${formatHoursZero(sumTopicLec)}</td>
               <td style="text-align:center;">${formatHoursZero(sumTopicLab)}</td>
@@ -827,7 +827,7 @@ function renderCourseDetail(courseId) {
           </thead>
           <tbody>
             ${workloadRowsHtml}
-            <tr style="background:#f8fafc;font-weight:700;">
+            <tr style="background:linear-gradient(90deg, #faf5ff 0%, #fffdf2 100%);font-weight:700;">
               <td>รวมทั้งหมด</td>
               <td style="text-align:center;">${workload.matchedTopicCount}</td>
               ${
