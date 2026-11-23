@@ -11,6 +11,7 @@ const state = {
   closByCourse: {},
   contentsByCourse: {},
   selectedCourseId: null,
+  selectedDetailSemester: 'ALL',
   lastMainView: 'courses'
 };
 
@@ -92,36 +93,138 @@ function parseTopicInstructors(raw) {
     .filter(Boolean);
 }
 
-function splitInstructorsByRole(rows) {
-  const coordinators = [];
-  const lecturers = [];
+function normalizeSemestersList(rawValue) {
+  const str = String(rawValue || '').trim().toUpperCase();
+  if (!str) return ['1'];
+
+  const found = [];
+  const tokens = str.split(/[,;/\s]+/).filter(Boolean);
+  tokens.forEach((tk) => {
+    const cleaned = tk.replace(/^T/, '');
+    if ((cleaned === '1' || cleaned === '2' || cleaned === '3') && !found.includes(cleaned)) {
+      found.push(cleaned);
+    }
+  });
+
+  if (found.length === 0) {
+    if (str.indexOf('2') !== -1 && str.indexOf('1') !== -1) return ['1', '2'];
+    if (str.indexOf('2') !== -1) return ['2'];
+    if (str.indexOf('3') !== -1) return ['3'];
+    return ['1'];
+  }
+  return found.sort();
+}
+
+function formatSemestersKey(semInput) {
+  return normalizeSemestersList(Array.isArray(semInput) ? semInput.join(',') : semInput).join(',');
+}
+
+function formatSemesterShort(semKey) {
+  const s = formatSemestersKey(semKey);
+  if (s === '1,2') return 'ภาค 1 และ 2';
+  if (s === '2') return 'ภาค 2';
+  if (s === '3') return 'ภาคฤดูร้อน';
+  return 'ภาค 1';
+}
+
+function formatSemesterFull(semKey) {
+  const s = formatSemestersKey(semKey);
+  if (s === '1,2') return 'ภาคการศึกษาที่ 1 และ 2';
+  if (s === '2') return 'ภาคการศึกษาที่ 2';
+  if (s === '3') return 'ภาคฤดูร้อน';
+  return 'ภาคการศึกษาที่ 1';
+}
+
+function splitInstructorsByRole(rows, fallbackSemKey) {
+  const coordMap = new Map();
+  const lectMap = new Map();
+
+  const addEntry = (targetMap, name, role, term, semKey) => {
+    const sems = normalizeSemestersList(semKey || fallbackSemKey || '1');
+    if (!targetMap.has(name)) {
+      targetMap.set(name, {
+        name,
+        role,
+        terms: term ? [term] : [],
+        semestersSet: new Set(sems)
+      });
+    } else {
+      const existing = targetMap.get(name);
+      if (term && !existing.terms.includes(term)) {
+        existing.terms.push(term);
+      }
+      sems.forEach((s) => existing.semestersSet.add(s));
+    }
+  };
 
   (rows || []).forEach((row) => {
     const name = getInstructorName(row);
     if (!name) return;
-    const role = String(row.instructor_role || '').trim();
+    const role = String(row.instructor_role || row.role || '').trim();
     const term = String(row.academic_term || '').trim();
-    const entry = { name, term, role };
+    const rawSem = String(row.semester || '').trim();
+    const semKey = rawSem ? formatSemestersKey(rawSem) : formatSemestersKey(fallbackSemKey || '1');
 
     if (role.includes('ผู้รับผิดชอบ')) {
-      coordinators.push(entry);
+      addEntry(coordMap, name, role, term, semKey);
     } else {
-      lecturers.push(entry);
+      addEntry(lectMap, name, role, term, semKey);
     }
   });
 
-  return { coordinators, lecturers };
+  const finalizeList = (mapObj) =>
+    Array.from(mapObj.values()).map((item) => {
+      const semestersList = Array.from(item.semestersSet).sort();
+      return {
+        name: item.name,
+        role: item.role,
+        term: item.terms.join(', '),
+        semester: semestersList.join(','),
+        semestersList
+      };
+    });
+
+  return {
+    coordinators: finalizeList(coordMap),
+    lecturers: finalizeList(lectMap)
+  };
 }
 
-function buildTeachingLoadSummary(contents) {
+function filterInstructorsBySemester(entries, semFilter) {
+  if (!entries || entries.length === 0) return [];
+  if (!semFilter || semFilter === 'ALL') return entries;
+  return entries
+    .filter((e) => (e.semestersList || ['1']).includes(semFilter))
+    .map((e) => ({
+      ...e,
+      semester: semFilter,
+      semestersList: [semFilter]
+    }));
+}
+
+function buildTeachingLoadSummary(contents, defaultSemKey, semFilter = 'ALL') {
   const map = {};
   let hasSharedTopic = false;
   let grandTotalHours = 0;
+  let sumLec = 0;
+  let sumLab = 0;
+  let sumSem1 = 0;
+  let sumSem2 = 0;
+  let matchedTopicCount = 0;
+  const isAllSem = !semFilter || semFilter === 'ALL';
 
   (contents || []).forEach((item) => {
+    const topicSems =
+      item.semesters_list && item.semesters_list.length > 0
+        ? item.semesters_list
+        : normalizeSemestersList(item.semester || defaultSemKey || '1');
+
+    const activeSems = isAllSem ? topicSems : topicSems.filter((s) => s === semFilter);
+    if (activeSems.length === 0) return;
+
+    matchedTopicCount += 1;
     const lec = parseFloat(item.lecture_hours) || 0;
     const lab = parseFloat(item.lab_hours) || 0;
-    grandTotalHours += lec + lab;
 
     const names = parseTopicInstructors(item.topic_instructor);
     const assigned = names.length > 0 ? names : ['ยังไม่ระบุผู้สอน'];
@@ -129,15 +232,39 @@ function buildTeachingLoadSummary(contents) {
 
     const shareLec = lec / assigned.length;
     const shareLab = lab / assigned.length;
+    const shareTotal = shareLec + shareLab;
+
+    activeSems.forEach((sem) => {
+      sumLec += lec;
+      sumLab += lab;
+      grandTotalHours += lec + lab;
+      if (sem === '1') sumSem1 += lec + lab;
+      else if (sem === '2') sumSem2 += lec + lab;
+
+      assigned.forEach((name) => {
+        if (!map[name]) {
+          map[name] = {
+            name,
+            topicCount: 0,
+            sem1Total: 0,
+            sem2Total: 0,
+            lec: 0,
+            lab: 0,
+            total: 0
+          };
+        }
+        map[name].lec += shareLec;
+        map[name].lab += shareLab;
+        map[name].total += shareTotal;
+        if (sem === '1') map[name].sem1Total += shareTotal;
+        else if (sem === '2') map[name].sem2Total += shareTotal;
+      });
+    });
 
     assigned.forEach((name) => {
-      if (!map[name]) {
-        map[name] = { name, topicCount: 0, lec: 0, lab: 0, total: 0 };
+      if (map[name]) {
+        map[name].topicCount += 1;
       }
-      map[name].topicCount += 1;
-      map[name].lec += shareLec;
-      map[name].lab += shareLab;
-      map[name].total += shareLec + shareLab;
     });
   });
 
@@ -147,10 +274,43 @@ function buildTeachingLoadSummary(contents) {
     return b.total - a.total || a.name.localeCompare(b.name, 'th');
   });
 
-  return { rows, hasSharedTopic, grandTotalHours };
+  return {
+    rows,
+    hasSharedTopic,
+    grandTotalHours,
+    sumLec,
+    sumLab,
+    sumSem1,
+    sumSem2,
+    matchedTopicCount
+  };
+}
+
+function ensureSemesterFilterControl() {
+  if (els.filterSemester) return;
+  const existing = document.getElementById('filterSemester');
+  if (existing) {
+    els.filterSemester = existing;
+    return;
+  }
+  const controlsWrap = document.querySelector('.filter-controls');
+  if (!controlsWrap) return;
+
+  const sel = document.createElement('select');
+  sel.id = 'filterSemester';
+  sel.setAttribute('aria-label', 'กรองตามภาคการศึกษา');
+  sel.innerHTML = `
+    <option value="">ทุกภาคการศึกษา</option>
+    <option value="1">ภาคการศึกษาที่ 1</option>
+    <option value="2">ภาคการศึกษาที่ 2</option>
+  `;
+  sel.addEventListener('change', renderCourseGrid);
+  controlsWrap.insertBefore(sel, controlsWrap.firstChild);
+  els.filterSemester = sel;
 }
 
 async function loadAllData() {
+  ensureSemesterFilterControl();
   els.loadingBanner.classList.remove('hidden');
   els.errorBanner.classList.add('hidden');
 
@@ -191,7 +351,41 @@ async function loadAllData() {
       .map((course) => {
         const id = String(course.course_id).trim();
         const courseClos = state.closByCourse[id] || [];
-        const courseContents = state.contentsByCourse[id] || [];
+        const rawContents = state.contentsByCourse[id] || [];
+        const rawInstructors = state.instructorsByCourse[id] || [];
+
+        const specSemRaw = String(course.offered_semesters || '').trim();
+        const inferredSemSet = new Set();
+        if (specSemRaw) {
+          normalizeSemestersList(specSemRaw).forEach((s) => inferredSemSet.add(s));
+        }
+        rawContents.forEach((item) => {
+          if (String(item.semester || '').trim()) {
+            normalizeSemestersList(item.semester).forEach((s) => inferredSemSet.add(s));
+          }
+        });
+        rawInstructors.forEach((inst) => {
+          if (String(inst.semester || '').trim()) {
+            normalizeSemestersList(inst.semester).forEach((s) => inferredSemSet.add(s));
+          }
+        });
+        if (inferredSemSet.size === 0) inferredSemSet.add('1');
+
+        const semestersList = Array.from(inferredSemSet).sort();
+        const offeredSemKey = specSemRaw ? formatSemestersKey(specSemRaw) : semestersList.join(',');
+
+        const courseContents = rawContents.map((item) => {
+          const itemSemKey = String(item.semester || '').trim()
+            ? formatSemestersKey(item.semester)
+            : offeredSemKey;
+          return {
+            ...item,
+            semester: itemSemKey,
+            semesters_list: normalizeSemestersList(itemSemKey)
+          };
+        });
+        state.contentsByCourse[id] = courseContents;
+
         const ploFlags = {
           PLO1: courseClos.some((c) => isTrue(c.PLO1)),
           PLO2: courseClos.some((c) => isTrue(c.PLO2)),
@@ -201,7 +395,7 @@ async function loadAllData() {
           PLO6: courseClos.some((c) => isTrue(c.PLO6))
         };
         const activePlos = Object.keys(ploFlags).filter((k) => ploFlags[k]);
-        const { coordinators, lecturers } = splitInstructorsByRole(state.instructorsByCourse[id]);
+        const { coordinators, lecturers } = splitInstructorsByRole(rawInstructors, offeredSemKey);
         const topicInstructorNames = courseContents.flatMap((item) =>
           parseTopicInstructors(item.topic_instructor)
         );
@@ -212,6 +406,8 @@ async function loadAllData() {
         return {
           ...course,
           course_id: id,
+          offered_semesters: offeredSemKey,
+          semesters_list: semestersList,
           ploFlags,
           activePlos,
           coordinators,
@@ -237,11 +433,13 @@ async function loadAllData() {
 
 function getFilteredCourses() {
   const q = els.searchInput.value.trim().toLowerCase();
+  const sem = els.filterSemester ? els.filterSemester.value : '';
   const level = els.filterLevel.value;
   const type = els.filterType.value;
   const plo = els.filterPlo.value;
 
   return state.courses.filter((c) => {
+    if (sem && !(c.semesters_list || ['1']).includes(sem)) return false;
     if (level && c.course_id.charAt(3) !== level) return false;
     if (type && !String(c.course_type || '').includes(type)) return false;
     if (plo && !c.ploFlags[plo]) return false;
@@ -263,6 +461,17 @@ function getFilteredCourses() {
   });
 }
 
+function formatCardInstructors(entries, isMultiSemCourse) {
+  if (!entries || entries.length === 0) return '-';
+  return entries
+    .map((e) =>
+      isMultiSemCourse && e.semester
+        ? `${e.name} (${formatSemesterShort(e.semester)})`
+        : e.name
+    )
+    .join(', ');
+}
+
 function renderCourseGrid() {
   const list = getFilteredCourses();
   els.courseCountText.textContent = `พบ ${list.length} จากทั้งหมด ${state.courses.length} กระบวนวิชา`;
@@ -279,14 +488,16 @@ function renderCourseGrid() {
           ? c.activePlos.map((p) => `<span class="plo-pill">${p}</span>`).join('')
           : '<span class="plo-pill empty">ยังไม่ระบุ PLO</span>';
 
-      const coordText = c.coordinators.length > 0 ? c.coordinators.map((i) => i.name).join(', ') : '-';
-      const lectText = c.lecturers.length > 0 ? c.lecturers.map((i) => i.name).join(', ') : '-';
+      const isMultiSem = (c.semesters_list || []).length > 1;
+      const semBadgeLabel = formatSemesterShort(c.offered_semesters);
+      const coordText = formatCardInstructors(c.coordinators, isMultiSem);
+      const lectText = formatCardInstructors(c.lecturers, isMultiSem);
 
       return `
         <div class="course-card" data-id="${escapeHtml(c.course_id)}">
           <div class="card-top">
             <span class="course-id-badge">${escapeHtml(c.course_id)}</span>
-            <span class="credit-tag">${escapeHtml(c.credit_structure)} • ${escapeHtml(c.course_type)}</span>
+            <span class="credit-tag">${escapeHtml(c.credit_structure)} • ${escapeHtml(c.course_type)} • ${escapeHtml(semBadgeLabel)}</span>
           </div>
           <h3 class="card-title-th">${escapeHtml(c.title_th)}</h3>
           <p class="card-title-en">${escapeHtml(c.title_en)}</p>
@@ -357,19 +568,28 @@ function formatMethodList(text) {
   return `<ul class="method-list">${items.map((i) => `<li>${escapeHtml(i)}</li>`).join('')}</ul>`;
 }
 
+function formatInstructorMetaTag(entry) {
+  const parts = [];
+  if (entry.semester) parts.push(formatSemesterShort(entry.semester));
+  if (entry.term) parts.push(entry.term);
+  if (parts.length === 0) return '';
+  return `<span class="term-tag">(${escapeHtml(parts.join(' • '))})</span>`;
+}
+
 function formatInstructorEntries(entries) {
   if (!entries || entries.length === 0) return '-';
   if (entries.length === 1) {
     const e = entries[0];
-    return `${escapeHtml(e.name)}${e.term ? `<span class="term-tag">(${escapeHtml(e.term)})</span>` : ''}`;
+    return `${escapeHtml(e.name)}${formatInstructorMetaTag(e)}`;
   }
   return `<ul class="instructor-list">${entries
-    .map((e) => `<li>${escapeHtml(e.name)}${e.term ? `<span class="term-tag">(${escapeHtml(e.term)})</span>` : ''}</li>`)
+    .map((e) => `<li>${escapeHtml(e.name)}${formatInstructorMetaTag(e)}</li>`)
     .join('')}</ul>`;
 }
 
 function openCourseDetail(courseId) {
   state.selectedCourseId = courseId;
+  state.selectedDetailSemester = 'ALL';
   renderCourseDetail(courseId);
   els.viewCourses.classList.add('hidden');
   els.viewMatrix.classList.add('hidden');
@@ -377,12 +597,33 @@ function openCourseDetail(courseId) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+function setDetailSemesterFilter(sem) {
+  state.selectedDetailSemester = sem || 'ALL';
+  if (state.selectedCourseId) {
+    renderCourseDetail(state.selectedCourseId);
+  }
+}
+
 function renderCourseDetail(courseId) {
   const course = state.courses.find((c) => c.course_id === courseId);
   if (!course) return;
 
   const clos = state.closByCourse[courseId] || [];
-  const contents = state.contentsByCourse[courseId] || [];
+  const allContents = state.contentsByCourse[courseId] || [];
+  const courseSems = course.semesters_list || ['1'];
+  const isMultiSemCourse = courseSems.length > 1;
+  const activeSem =
+    isMultiSemCourse && state.selectedDetailSemester !== 'ALL' && courseSems.includes(state.selectedDetailSemester)
+      ? state.selectedDetailSemester
+      : 'ALL';
+
+  const filteredContents =
+    activeSem === 'ALL'
+      ? allContents
+      : allContents.filter((item) => (item.semesters_list || ['1']).includes(activeSem));
+
+  const filteredCoordinators = filterInstructorsBySemester(course.coordinators, activeSem);
+  const filteredLecturers = filterInstructorsBySemester(course.lecturers, activeSem);
 
   const cloRowsHtml = clos
     .map((clo) => {
@@ -407,20 +648,22 @@ function renderCourseDetail(courseId) {
     })
     .join('');
 
-  let sumLec = 0;
-  let sumLab = 0;
-  const contentRowsHtml = contents
+  let sumTopicLec = 0;
+  let sumTopicLab = 0;
+  const contentRowsHtml = filteredContents
     .map((item) => {
       const lec = parseFloat(item.lecture_hours) || 0;
       const lab = parseFloat(item.lab_hours) || 0;
-      sumLec += lec;
-      sumLab += lab;
+      sumTopicLec += lec;
+      sumTopicLab += lab;
 
       const topicInstructors = parseTopicInstructors(item.topic_instructor);
       const instructorBadges =
         topicInstructors.length > 0
           ? topicInstructors.map((name) => `<span class="instructor-pill">${escapeHtml(name)}</span>`).join('')
           : '<span style="color:#9ca3af;">-</span>';
+
+      const displaySemKey = activeSem === 'ALL' ? item.semester || course.offered_semesters : activeSem;
 
       return `
         <tr>
@@ -429,6 +672,7 @@ function renderCourseDetail(courseId) {
             <div>${escapeHtml(item.topic_th)}</div>
             <div style="color:#6b7280;font-size:0.86rem;">${escapeHtml(item.topic_en)}</div>
           </td>
+          <td style="text-align:center;"><span class="plo-pill">${escapeHtml(formatSemesterShort(displaySemKey))}</span></td>
           <td style="text-align:center;">${formatHours(lec)}</td>
           <td style="text-align:center;">${formatHours(lab)}</td>
           <td style="text-align:center;">${instructorBadges}</td>
@@ -437,7 +681,9 @@ function renderCourseDetail(courseId) {
     })
     .join('');
 
-  const workload = buildTeachingLoadSummary(contents);
+  const workload = buildTeachingLoadSummary(allContents, course.offered_semesters, activeSem);
+  const showSemColumns = isMultiSemCourse && activeSem === 'ALL';
+
   const workloadRowsHtml = workload.rows
     .map((row) => {
       const pct = workload.grandTotalHours > 0 ? ((row.total / workload.grandTotalHours) * 100).toFixed(1) : '0.0';
@@ -445,6 +691,14 @@ function renderCourseDetail(courseId) {
         <tr>
           <td><strong>${escapeHtml(row.name)}</strong></td>
           <td style="text-align:center;">${row.topicCount}</td>
+          ${
+            showSemColumns
+              ? `
+            <td style="text-align:center;">${formatHoursZero(row.sem1Total)}</td>
+            <td style="text-align:center;">${formatHoursZero(row.sem2Total)}</td>
+          `
+              : ''
+          }
           <td style="text-align:center;">${formatHours(row.lec)}</td>
           <td style="text-align:center;">${formatHours(row.lab)}</td>
           <td style="text-align:center;font-weight:700;">${formatHoursZero(row.total)}</td>
@@ -454,6 +708,26 @@ function renderCourseDetail(courseId) {
     })
     .join('');
 
+  const semesterFilterBarHtml = isMultiSemCourse
+    ? `
+      <div class="no-print" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px;padding:10px 14px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;">
+        <strong style="font-size:0.88rem;color:var(--primary);">มุมมองภาคการศึกษา:</strong>
+        <button type="button" class="${activeSem === 'ALL' ? 'btn-primary' : 'btn-outline'}" style="padding:5px 12px;font-size:0.84rem;" data-sem-btn="ALL">ทุกภาคการศึกษา (${escapeHtml(formatSemesterShort(course.offered_semesters))})</button>
+        ${courseSems
+          .map(
+            (s) => `
+          <button type="button" class="${activeSem === s ? 'btn-primary' : 'btn-outline'}" style="padding:5px 12px;font-size:0.84rem;" data-sem-btn="${escapeHtml(s)}">${escapeHtml(formatSemesterFull(s))}</button>
+        `
+          )
+          .join('')}
+      </div>
+    `
+    : '';
+
+  const totalLoadLabel = showSemColumns
+    ? 'รวมชั่วโมงทั้งปี'
+    : `รวมชั่วโมง (${formatSemesterShort(activeSem === 'ALL' ? course.offered_semesters : activeSem)})`;
+
   els.courseDetailContent.innerHTML = `
     <div class="spec-header">
       <div class="spec-code">${escapeHtml(course.course_code_th)} (${escapeHtml(course.course_id)}) • ${escapeHtml(course.course_code_en)}</div>
@@ -461,12 +735,15 @@ function renderCourseDetail(courseId) {
       <p class="spec-title-en">${escapeHtml(course.title_en)}</p>
     </div>
 
+    ${semesterFilterBarHtml}
+
     <div class="info-grid">
       <div class="info-item"><strong>หน่วยกิตและโครงสร้าง</strong>${escapeHtml(course.credit_structure)}</div>
       <div class="info-item"><strong>ลักษณะกระบวนวิชา</strong>${escapeHtml(course.course_type)} (${escapeHtml(course.grading_system)})</div>
+      <div class="info-item"><strong>ภาคการศึกษาที่เปิดสอน</strong>${escapeHtml(formatSemesterFull(course.offered_semesters))}</div>
       <div class="info-item"><strong>เงื่อนไขที่ต้องผ่านก่อน</strong>${escapeHtml(course.prerequisite_th || 'ไม่มี')}</div>
-      <div class="info-item"><strong>อาจารย์ผู้รับผิดชอบกระบวนวิชา</strong>${formatInstructorEntries(course.coordinators)}</div>
-      <div class="info-item"><strong>อาจารย์ผู้สอน</strong>${formatInstructorEntries(course.lecturers)}</div>
+      <div class="info-item"><strong>อาจารย์ผู้รับผิดชอบกระบวนวิชา</strong>${formatInstructorEntries(filteredCoordinators.length > 0 ? filteredCoordinators : course.coordinators)}</div>
+      <div class="info-item"><strong>อาจารย์ผู้สอน</strong>${formatInstructorEntries(filteredLecturers)}</div>
     </div>
 
     <div class="section-block">
@@ -507,6 +784,7 @@ function renderCourseDetail(courseId) {
             <tr>
               <th style="width:65px;text-align:center;">หัวข้อ</th>
               <th>รายละเอียดเนื้อหา</th>
+              <th style="width:95px;text-align:center;">ภาคฯ</th>
               <th style="width:95px;text-align:center;">ชม. บรรยาย</th>
               <th style="width:100px;text-align:center;">ชม. ปฏิบัติการ</th>
               <th style="width:150px;text-align:center;">อาจารย์ผู้สอน</th>
@@ -515,10 +793,10 @@ function renderCourseDetail(courseId) {
           <tbody>
             ${contentRowsHtml}
             <tr style="background:#f8fafc;font-weight:700;">
-              <td colspan="2" style="text-align:right;">รวมจำนวนชั่วโมงตลอดภาคการศึกษา</td>
-              <td style="text-align:center;">${formatHoursZero(sumLec)}</td>
-              <td style="text-align:center;">${formatHoursZero(sumLab)}</td>
-              <td style="text-align:center;">รวม ${formatHoursZero(sumLec + sumLab)} ชม.</td>
+              <td colspan="3" style="text-align:right;">รวมจำนวนชั่วโมงตามแผนการสอน (${escapeHtml(activeSem === 'ALL' ? formatSemesterShort(course.offered_semesters) : formatSemesterShort(activeSem))})</td>
+              <td style="text-align:center;">${formatHoursZero(sumTopicLec)}</td>
+              <td style="text-align:center;">${formatHoursZero(sumTopicLab)}</td>
+              <td style="text-align:center;">รวม ${formatHoursZero(sumTopicLec + sumTopicLab)} ชม.</td>
             </tr>
           </tbody>
         </table>
@@ -532,20 +810,36 @@ function renderCourseDetail(courseId) {
           <thead>
             <tr>
               <th>อาจารย์ผู้สอน</th>
-              <th style="width:110px;text-align:center;">จำนวนหัวข้อ</th>
-              <th style="width:110px;text-align:center;">ชม. บรรยาย</th>
-              <th style="width:110px;text-align:center;">ชม. ปฏิบัติการ</th>
-              <th style="width:110px;text-align:center;">รวมชั่วโมง</th>
-              <th style="width:100px;text-align:center;">สัดส่วน</th>
+              <th style="width:105px;text-align:center;">จำนวนหัวข้อ</th>
+              ${
+                showSemColumns
+                  ? `
+                <th style="width:100px;text-align:center;">ภาค 1 (ชม.)</th>
+                <th style="width:100px;text-align:center;">ภาค 2 (ชม.)</th>
+              `
+                  : ''
+              }
+              <th style="width:105px;text-align:center;">ชม. บรรยาย</th>
+              <th style="width:105px;text-align:center;">ชม. ปฏิบัติการ</th>
+              <th style="width:120px;text-align:center;">${escapeHtml(totalLoadLabel)}</th>
+              <th style="width:95px;text-align:center;">สัดส่วน</th>
             </tr>
           </thead>
           <tbody>
             ${workloadRowsHtml}
             <tr style="background:#f8fafc;font-weight:700;">
               <td>รวมทั้งหมด</td>
-              <td style="text-align:center;">${contents.length}</td>
-              <td style="text-align:center;">${formatHoursZero(sumLec)}</td>
-              <td style="text-align:center;">${formatHoursZero(sumLab)}</td>
+              <td style="text-align:center;">${workload.matchedTopicCount}</td>
+              ${
+                showSemColumns
+                  ? `
+                <td style="text-align:center;">${formatHoursZero(workload.sumSem1)}</td>
+                <td style="text-align:center;">${formatHoursZero(workload.sumSem2)}</td>
+              `
+                  : ''
+              }
+              <td style="text-align:center;">${formatHoursZero(workload.sumLec)}</td>
+              <td style="text-align:center;">${formatHoursZero(workload.sumLab)}</td>
               <td style="text-align:center;">${formatHoursZero(workload.grandTotalHours)}</td>
               <td style="text-align:center;">100%</td>
             </tr>
@@ -557,6 +851,11 @@ function renderCourseDetail(courseId) {
           ? '<p class="summary-note">* หมายเหตุ: หัวข้อที่มีผู้สอนร่วมกันมากกว่า 1 ท่าน ระบบคำนวณแบ่งชั่วโมงสอนเท่าๆ กันตามจำนวนผู้สอนในหัวข้อนั้น</p>'
           : ''
       }
+      ${
+        showSemColumns
+          ? '<p class="summary-note">* หมายเหตุ: กระบวนวิชานี้เปิดสอนมากกว่า 1 ภาคการศึกษา ตารางสรุปภาระงานสอนแสดงชั่วโมงแยกภาค 1 และภาค 2 (สามารถกดปุ่มเลือกดูเฉพาะภาคการศึกษาด้านบนได้)</p>'
+          : ''
+      }
     </div>
 
     <div class="approval-footer">
@@ -564,15 +863,37 @@ function renderCourseDetail(courseId) {
       <div><strong>การอนุมัติ:</strong> ${escapeHtml(course.approval_meeting_info || '-')} | <strong>มีผลบังคับใช้:</strong> ${escapeHtml(course.effective_term || '-')}</div>
     </div>
   `;
+
+  els.courseDetailContent.querySelectorAll('[data-sem-btn]').forEach((btn) => {
+    btn.addEventListener('click', () => setDetailSemesterFilter(btn.getAttribute('data-sem-btn')));
+  });
 }
 
 function copySyllabusText() {
   const course = state.courses.find((c) => c.course_id === state.selectedCourseId);
   if (!course) return;
   const clos = state.closByCourse[course.course_id] || [];
-  const contents = state.contentsByCourse[course.course_id] || [];
-  const coordText = course.coordinators.length > 0 ? course.coordinators.map((i) => i.name).join(', ') : '-';
-  const lectText = course.lecturers.length > 0 ? course.lecturers.map((i) => i.name).join(', ') : '-';
+  const allContents = state.contentsByCourse[course.course_id] || [];
+  const courseSems = course.semesters_list || ['1'];
+  const isMultiSemCourse = courseSems.length > 1;
+  const activeSem =
+    isMultiSemCourse && state.selectedDetailSemester !== 'ALL' && courseSems.includes(state.selectedDetailSemester)
+      ? state.selectedDetailSemester
+      : 'ALL';
+
+  const contents =
+    activeSem === 'ALL'
+      ? allContents
+      : allContents.filter((item) => (item.semesters_list || ['1']).includes(activeSem));
+
+  const coordinators = filterInstructorsBySemester(course.coordinators, activeSem);
+  const lecturers = filterInstructorsBySemester(course.lecturers, activeSem);
+  const coordList = coordinators.length > 0 ? coordinators : course.coordinators;
+
+  const coordText = coordList.length > 0 ? formatCardInstructors(coordList, isMultiSemCourse && activeSem === 'ALL') : '-';
+  const lectText = lecturers.length > 0 ? formatCardInstructors(lecturers, isMultiSemCourse && activeSem === 'ALL') : '-';
+  const semHeaderLabel =
+    activeSem === 'ALL' ? formatSemesterFull(course.offered_semesters) : formatSemesterFull(activeSem);
 
   const contentLines = contents.map((item) => {
     const lec = parseFloat(item.lecture_hours) || 0;
@@ -583,12 +904,14 @@ function copySyllabusText() {
         ? `บรรยาย ${lec} ชม.`
         : `ปฏิบัติการ ${lab} ชม.`;
     const inst = String(item.topic_instructor || '').trim();
-    return `${item.topic_no}. ${item.topic_th} (${hrLabel})${inst ? ` — ผู้สอน: ${inst}` : ''}`;
+    const semTag = isMultiSemCourse && activeSem === 'ALL' ? ` [${formatSemesterShort(item.semester)}]` : '';
+    return `${item.topic_no}. ${item.topic_th}${semTag} (${hrLabel})${inst ? ` — ผู้สอน: ${inst}` : ''}`;
   });
 
   const text = [
     `${course.course_code_th} (${course.course_id}) ${course.title_th} ${course.credit_structure}`,
     `${course.course_code_en} ${course.title_en}`,
+    `ภาคการศึกษาที่เปิดสอน: ${semHeaderLabel}`,
     `เงื่อนไขที่ต้องผ่านก่อน: ${course.prerequisite_th || 'ไม่มี'}`,
     `อาจารย์ผู้รับผิดชอบกระบวนวิชา: ${coordText}`,
     `อาจารย์ผู้สอน: ${lectText}`,
