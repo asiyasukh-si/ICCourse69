@@ -99,15 +99,18 @@ function parseTopicInstructors(raw) {
 function normalizeSemestersList(rawValue) {
   const str = String(rawValue || '').trim().toUpperCase();
   if (!str) return ['1'];
+  if (str === 'CLOSED' || str === 'NONE') return ['CLOSED'];
 
   const found = [];
   const tokens = str.split(/[,;/\s]+/).filter(Boolean);
   tokens.forEach((tk) => {
     const cleaned = tk.replace(/^T/, '');
-    if ((cleaned === '1' || cleaned === '2' || cleaned === '3') && !found.includes(cleaned)) {
+    if ((cleaned === '1' || cleaned === '2' || cleaned === '3' || cleaned === 'CLOSED') && !found.includes(cleaned)) {
       found.push(cleaned);
     }
   });
+
+  if (found.includes('CLOSED')) return ['CLOSED'];
 
   if (found.length === 0) {
     if (str.indexOf('2') !== -1 && str.indexOf('1') !== -1) return ['1', '2'];
@@ -124,6 +127,7 @@ function formatSemestersKey(semInput) {
 
 function formatSemesterShort(semKey) {
   const s = formatSemestersKey(semKey);
+  if (s === 'CLOSED') return 'ปิดชั่วคราวในปีนี้';
   if (s === '1,2') return 'ภาค 1 และ 2';
   if (s === '2') return 'ภาค 2';
   if (s === '3') return 'ภาคฤดูร้อน';
@@ -132,10 +136,18 @@ function formatSemesterShort(semKey) {
 
 function formatSemesterFull(semKey) {
   const s = formatSemestersKey(semKey);
+  if (s === 'CLOSED') return 'ปิดการเรียนการสอนชั่วคราวในปีการศึกษานี้';
   if (s === '1,2') return 'ภาคการศึกษาที่ 1 และ 2';
   if (s === '2') return 'ภาคการศึกษาที่ 2';
   if (s === '3') return 'ภาคฤดูร้อน';
   return 'ภาคการศึกษาที่ 1';
+}
+
+function formatCurriculumBadgeLabel(verRaw) {
+  const v = String(verRaw || '2564,2569').trim();
+  if (v.includes('2564') && v.includes('2569')) return 'หลักสูตร 64 & 69';
+  if (v.includes('2564')) return 'เฉพาะหลักสูตร 64';
+  return 'หลักสูตร 69';
 }
 
 function splitInstructorsByRole(rows, fallbackSemKey) {
@@ -293,6 +305,25 @@ function ensureSemesterFilterControl() {
   const controlsWrap = document.querySelector('.filter-controls');
   if (!controlsWrap) return;
 
+  if (!els.filterCurriculum) {
+    const existingCurr = document.getElementById('filterCurriculum');
+    if (existingCurr) {
+      els.filterCurriculum = existingCurr;
+    } else {
+      const currSel = document.createElement('select');
+      currSel.id = 'filterCurriculum';
+      currSel.setAttribute('aria-label', 'กรองตามหลักสูตร');
+      currSel.innerHTML = `
+        <option value="">ทุกหลักสูตร (64 & 69)</option>
+        <option value="2569">หลักสูตร 2569 (รหัส 69+)</option>
+        <option value="2564">หลักสูตร 2564 (รหัส 64-68)</option>
+      `;
+      currSel.addEventListener('change', renderCourseGrid);
+      controlsWrap.insertBefore(currSel, controlsWrap.firstChild);
+      els.filterCurriculum = currSel;
+    }
+  }
+
   if (!els.filterSemester) {
     const existingSem = document.getElementById('filterSemester');
     if (existingSem) {
@@ -302,12 +333,13 @@ function ensureSemesterFilterControl() {
       sel.id = 'filterSemester';
       sel.setAttribute('aria-label', 'กรองตามภาคการศึกษา');
       sel.innerHTML = `
-        <option value="">ทุกภาคการศึกษา</option>
+        <option value="">ทุกภาคการศึกษา (ที่เปิด)</option>
         <option value="1">ภาคการศึกษาที่ 1</option>
         <option value="2">ภาคการศึกษาที่ 2</option>
+        <option value="CLOSED">วิชาที่ปิดชั่วคราวในปีนี้</option>
       `;
       sel.addEventListener('change', renderCourseGrid);
-      controlsWrap.insertBefore(sel, controlsWrap.firstChild);
+      controlsWrap.insertBefore(sel, els.filterCurriculum.nextSibling);
       els.filterSemester = sel;
     }
   }
@@ -506,6 +538,7 @@ async function loadAllData() {
 
 function getFilteredCourses() {
   const q = els.searchInput.value.trim().toLowerCase();
+  const curr = els.filterCurriculum ? els.filterCurriculum.value : '';
   const sem = els.filterSemester ? els.filterSemester.value : '';
   const assignStatus = els.filterAssignStatus ? els.filterAssignStatus.value : '';
   const level = els.filterLevel.value;
@@ -513,7 +546,16 @@ function getFilteredCourses() {
   const plo = els.filterPlo.value;
 
   return state.courses.filter((c) => {
-    if (sem && !(c.semesters_list || ['1']).includes(sem)) return false;
+    const isClosed = String(c.offered_semesters || '').toUpperCase() === 'CLOSED';
+    const cVer = String(c.curriculum_version || '2564,2569');
+    if (curr && !cVer.includes(curr)) return false;
+    if (sem === 'CLOSED') {
+      if (!isClosed) return false;
+    } else if (sem) {
+      if (isClosed || !(c.semesters_list || ['1']).includes(sem)) return false;
+    } else {
+      if (isClosed) return false;
+    }
     if (assignStatus === 'COMPLETE' && !c.isAssignmentComplete) return false;
     if (assignStatus === 'INCOMPLETE' && c.isAssignmentComplete) return false;
     if (level && c.course_id.charAt(3) !== level) return false;
@@ -566,6 +608,7 @@ function renderCourseGrid() {
 
       const isMultiSem = (c.semesters_list || []).length > 1;
       const semBadgeLabel = formatSemesterShort(c.offered_semesters);
+      const currBadgeLabel = formatCurriculumBadgeLabel(c.curriculum_version);
       const coordText = formatCardInstructors(c.coordinators, isMultiSem);
       const lectText = formatCardInstructors(c.lecturers, isMultiSem);
       const assignBadgeHtml = !c.isAssignmentComplete
@@ -576,7 +619,7 @@ function renderCourseGrid() {
         <div class="course-card" data-id="${escapeHtml(c.course_id)}">
           <div class="card-top">
             <span class="course-id-badge">${escapeHtml(c.course_id)}</span>
-            <span class="credit-tag">${escapeHtml(c.credit_structure)} • ${escapeHtml(c.course_type)} • ${escapeHtml(semBadgeLabel)}</span>
+            <span class="credit-tag">${escapeHtml(c.credit_structure)} • ${escapeHtml(c.course_type)} • ${escapeHtml(semBadgeLabel)} • ${escapeHtml(currBadgeLabel)}</span>
           </div>
           <h3 class="card-title-th">${escapeHtml(c.title_th)}</h3>
           <p class="card-title-en">${escapeHtml(c.title_en)}</p>
