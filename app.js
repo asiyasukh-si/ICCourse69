@@ -5,6 +5,9 @@ const CSV_URLS = {
   contents: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0iLo4xqCPxrtPu7yj5PyybojanJyxP8i0WoDAvMMeIp6Gmpy75gttgQhKkqT0wcr_Q5A-70J3wJ31/pub?gid=2&single=true&output=csv'
 };
 
+const OBE_CACHE_KEY = 'iccourse69_obe_cache_v1';
+let initialUrlCourseHandled = false;
+
 const state = {
   courses: [],
   instructorsByCourse: {},
@@ -287,32 +290,194 @@ function buildTeachingLoadSummary(contents, defaultSemKey, semFilter = 'ALL') {
 }
 
 function ensureSemesterFilterControl() {
-  if (els.filterSemester) return;
-  const existing = document.getElementById('filterSemester');
-  if (existing) {
-    els.filterSemester = existing;
-    return;
-  }
   const controlsWrap = document.querySelector('.filter-controls');
   if (!controlsWrap) return;
 
-  const sel = document.createElement('select');
-  sel.id = 'filterSemester';
-  sel.setAttribute('aria-label', 'กรองตามภาคการศึกษา');
-  sel.innerHTML = `
-    <option value="">ทุกภาคการศึกษา</option>
-    <option value="1">ภาคการศึกษาที่ 1</option>
-    <option value="2">ภาคการศึกษาที่ 2</option>
-  `;
-  sel.addEventListener('change', renderCourseGrid);
-  controlsWrap.insertBefore(sel, controlsWrap.firstChild);
-  els.filterSemester = sel;
+  if (!els.filterSemester) {
+    const existingSem = document.getElementById('filterSemester');
+    if (existingSem) {
+      els.filterSemester = existingSem;
+    } else {
+      const sel = document.createElement('select');
+      sel.id = 'filterSemester';
+      sel.setAttribute('aria-label', 'กรองตามภาคการศึกษา');
+      sel.innerHTML = `
+        <option value="">ทุกภาคการศึกษา</option>
+        <option value="1">ภาคการศึกษาที่ 1</option>
+        <option value="2">ภาคการศึกษาที่ 2</option>
+      `;
+      sel.addEventListener('change', renderCourseGrid);
+      controlsWrap.insertBefore(sel, controlsWrap.firstChild);
+      els.filterSemester = sel;
+    }
+  }
+
+  if (!els.filterAssignStatus) {
+    const existingAssign = document.getElementById('filterAssignStatus');
+    if (existingAssign) {
+      els.filterAssignStatus = existingAssign;
+    } else {
+      const assignSel = document.createElement('select');
+      assignSel.id = 'filterAssignStatus';
+      assignSel.setAttribute('aria-label', 'กรองตามสถานะการระบุผู้สอน');
+      assignSel.innerHTML = `
+        <option value="">ทุกสถานะผู้สอน</option>
+        <option value="COMPLETE">ระบุผู้สอนครบแล้ว</option>
+        <option value="INCOMPLETE">รอระบุผู้สอน / ยังไม่ครบ</option>
+      `;
+      assignSel.addEventListener('change', renderCourseGrid);
+      controlsWrap.appendChild(assignSel);
+      els.filterAssignStatus = assignSel;
+    }
+  }
+}
+
+function applyRawDataToState(specs, instructors, clos, contents) {
+  state.instructorsByCourse = {};
+  instructors.forEach((row) => {
+    const id = String(row.course_id || '').trim();
+    if (!id) return;
+    if (!state.instructorsByCourse[id]) state.instructorsByCourse[id] = [];
+    state.instructorsByCourse[id].push(row);
+  });
+
+  state.closByCourse = {};
+  clos.forEach((row) => {
+    const id = String(row.course_id || '').trim();
+    if (!id) return;
+    if (!state.closByCourse[id]) state.closByCourse[id] = [];
+    state.closByCourse[id].push(row);
+  });
+
+  state.contentsByCourse = {};
+  contents.forEach((row) => {
+    const id = String(row.course_id || '').trim();
+    if (!id) return;
+    if (!state.contentsByCourse[id]) state.contentsByCourse[id] = [];
+    state.contentsByCourse[id].push(row);
+  });
+
+  state.courses = specs
+    .filter((row) => String(row.course_id || '').trim() !== '')
+    .map((course) => {
+      const id = String(course.course_id).trim();
+      const courseClos = state.closByCourse[id] || [];
+      const rawContents = state.contentsByCourse[id] || [];
+      const rawInstructors = state.instructorsByCourse[id] || [];
+
+      const specSemRaw = String(course.offered_semesters || '').trim();
+      const inferredSemSet = new Set();
+      if (specSemRaw) {
+        normalizeSemestersList(specSemRaw).forEach((s) => inferredSemSet.add(s));
+      }
+      rawContents.forEach((item) => {
+        if (String(item.semester || '').trim()) {
+          normalizeSemestersList(item.semester).forEach((s) => inferredSemSet.add(s));
+        }
+      });
+      rawInstructors.forEach((inst) => {
+        if (String(inst.semester || '').trim()) {
+          normalizeSemestersList(inst.semester).forEach((s) => inferredSemSet.add(s));
+        }
+      });
+      if (inferredSemSet.size === 0) inferredSemSet.add('1');
+
+      const semestersList = Array.from(inferredSemSet).sort();
+      const offeredSemKey = specSemRaw ? formatSemestersKey(specSemRaw) : semestersList.join(',');
+
+      const courseContents = rawContents.map((item) => {
+        const itemSemKey = String(item.semester || '').trim()
+          ? formatSemestersKey(item.semester)
+          : offeredSemKey;
+        return {
+          ...item,
+          semester: itemSemKey,
+          semesters_list: normalizeSemestersList(itemSemKey)
+        };
+      });
+      state.contentsByCourse[id] = courseContents;
+
+      const ploFlags = {
+        PLO1: courseClos.some((c) => isTrue(c.PLO1)),
+        PLO2: courseClos.some((c) => isTrue(c.PLO2)),
+        PLO3: courseClos.some((c) => isTrue(c.PLO3)),
+        PLO4: courseClos.some((c) => isTrue(c.PLO4)),
+        PLO5: courseClos.some((c) => isTrue(c.PLO5)),
+        PLO6: courseClos.some((c) => isTrue(c.PLO6))
+      };
+      const activePlos = Object.keys(ploFlags).filter((k) => ploFlags[k]);
+      const { coordinators, lecturers } = splitInstructorsByRole(rawInstructors, offeredSemKey);
+      const topicInstructorNames = courseContents.flatMap((item) =>
+        parseTopicInstructors(item.topic_instructor)
+      );
+      const allInstructorNames = Array.from(
+        new Set([...coordinators.map((i) => i.name), ...lecturers.map((i) => i.name), ...topicInstructorNames])
+      );
+
+      const hasCoordinator = coordinators.length > 0;
+      const unassignedTopicCount = courseContents.filter(
+        (item) => parseTopicInstructors(item.topic_instructor).length === 0
+      ).length;
+      const isAssignmentComplete =
+        hasCoordinator && courseContents.length > 0 && unassignedTopicCount === 0;
+
+      return {
+        ...course,
+        course_id: id,
+        offered_semesters: offeredSemKey,
+        semesters_list: semestersList,
+        ploFlags,
+        activePlos,
+        coordinators,
+        lecturers,
+        allInstructorNames,
+        hasCoordinator,
+        unassignedTopicCount,
+        isAssignmentComplete
+      };
+    })
+    .sort((a, b) => a.course_id.localeCompare(b.course_id));
+
+  els.loadingBanner.classList.add('hidden');
+  renderCourseGrid();
+  renderPloMatrix();
+
+  if (!initialUrlCourseHandled) {
+    initialUrlCourseHandled = true;
+    const urlCourse = new URLSearchParams(window.location.search).get('course');
+    if (urlCourse) {
+      const cleanId = String(urlCourse).trim();
+      if (state.courses.some((c) => c.course_id === cleanId)) {
+        openCourseDetail(cleanId);
+        return;
+      }
+    }
+  }
+
+  if (state.selectedCourseId) {
+    renderCourseDetail(state.selectedCourseId);
+  }
 }
 
 async function loadAllData() {
   ensureSemesterFilterControl();
-  els.loadingBanner.classList.remove('hidden');
   els.errorBanner.classList.add('hidden');
+  let renderedFromCache = false;
+
+  try {
+    const cachedRaw = localStorage.getItem(OBE_CACHE_KEY);
+    if (cachedRaw) {
+      const cached = JSON.parse(cachedRaw);
+      if (cached && cached.specs && cached.instructors && cached.clos && cached.contents) {
+        applyRawDataToState(cached.specs, cached.instructors, cached.clos, cached.contents);
+        renderedFromCache = true;
+      }
+    }
+  } catch (e) {}
+
+  if (!renderedFromCache) {
+    els.loadingBanner.classList.remove('hidden');
+  }
 
   try {
     const [specs, instructors, clos, contents] = await Promise.all([
@@ -322,124 +487,35 @@ async function loadAllData() {
       fetchCsv(CSV_URLS.contents)
     ]);
 
-    state.instructorsByCourse = {};
-    instructors.forEach((row) => {
-      const id = String(row.course_id || '').trim();
-      if (!id) return;
-      if (!state.instructorsByCourse[id]) state.instructorsByCourse[id] = [];
-      state.instructorsByCourse[id].push(row);
-    });
-
-    state.closByCourse = {};
-    clos.forEach((row) => {
-      const id = String(row.course_id || '').trim();
-      if (!id) return;
-      if (!state.closByCourse[id]) state.closByCourse[id] = [];
-      state.closByCourse[id].push(row);
-    });
-
-    state.contentsByCourse = {};
-    contents.forEach((row) => {
-      const id = String(row.course_id || '').trim();
-      if (!id) return;
-      if (!state.contentsByCourse[id]) state.contentsByCourse[id] = [];
-      state.contentsByCourse[id].push(row);
-    });
-
-    state.courses = specs
-      .filter((row) => String(row.course_id || '').trim() !== '')
-      .map((course) => {
-        const id = String(course.course_id).trim();
-        const courseClos = state.closByCourse[id] || [];
-        const rawContents = state.contentsByCourse[id] || [];
-        const rawInstructors = state.instructorsByCourse[id] || [];
-
-        const specSemRaw = String(course.offered_semesters || '').trim();
-        const inferredSemSet = new Set();
-        if (specSemRaw) {
-          normalizeSemestersList(specSemRaw).forEach((s) => inferredSemSet.add(s));
-        }
-        rawContents.forEach((item) => {
-          if (String(item.semester || '').trim()) {
-            normalizeSemestersList(item.semester).forEach((s) => inferredSemSet.add(s));
-          }
-        });
-        rawInstructors.forEach((inst) => {
-          if (String(inst.semester || '').trim()) {
-            normalizeSemestersList(inst.semester).forEach((s) => inferredSemSet.add(s));
-          }
-        });
-        if (inferredSemSet.size === 0) inferredSemSet.add('1');
-
-        const semestersList = Array.from(inferredSemSet).sort();
-        const offeredSemKey = specSemRaw ? formatSemestersKey(specSemRaw) : semestersList.join(',');
-
-        const courseContents = rawContents.map((item) => {
-          const itemSemKey = String(item.semester || '').trim()
-            ? formatSemestersKey(item.semester)
-            : offeredSemKey;
-          return {
-            ...item,
-            semester: itemSemKey,
-            semesters_list: normalizeSemestersList(itemSemKey)
-          };
-        });
-        state.contentsByCourse[id] = courseContents;
-
-        const ploFlags = {
-          PLO1: courseClos.some((c) => isTrue(c.PLO1)),
-          PLO2: courseClos.some((c) => isTrue(c.PLO2)),
-          PLO3: courseClos.some((c) => isTrue(c.PLO3)),
-          PLO4: courseClos.some((c) => isTrue(c.PLO4)),
-          PLO5: courseClos.some((c) => isTrue(c.PLO5)),
-          PLO6: courseClos.some((c) => isTrue(c.PLO6))
-        };
-        const activePlos = Object.keys(ploFlags).filter((k) => ploFlags[k]);
-        const { coordinators, lecturers } = splitInstructorsByRole(rawInstructors, offeredSemKey);
-        const topicInstructorNames = courseContents.flatMap((item) =>
-          parseTopicInstructors(item.topic_instructor)
-        );
-        const allInstructorNames = Array.from(
-          new Set([...coordinators.map((i) => i.name), ...lecturers.map((i) => i.name), ...topicInstructorNames])
-        );
-
-        return {
-          ...course,
-          course_id: id,
-          offered_semesters: offeredSemKey,
-          semesters_list: semestersList,
-          ploFlags,
-          activePlos,
-          coordinators,
-          lecturers,
-          allInstructorNames
-        };
-      })
-      .sort((a, b) => a.course_id.localeCompare(b.course_id));
-
-    els.loadingBanner.classList.add('hidden');
-    renderCourseGrid();
-    renderPloMatrix();
-    if (state.selectedCourseId) {
-      renderCourseDetail(state.selectedCourseId);
-    }
+    applyRawDataToState(specs, instructors, clos, contents);
+    try {
+      localStorage.setItem(
+        OBE_CACHE_KEY,
+        JSON.stringify({ specs, instructors, clos, contents, updatedAt: Date.now() })
+      );
+    } catch (e) {}
   } catch (err) {
     console.error(err);
     els.loadingBanner.classList.add('hidden');
-    els.errorBanner.textContent = 'ไม่สามารถโหลดข้อมูลจาก Google Sheets ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตหรือสิทธิ์การเผยแพร่ไฟล์ครับ';
-    els.errorBanner.classList.remove('hidden');
+    if (!renderedFromCache) {
+      els.errorBanner.textContent = 'ไม่สามารถโหลดข้อมูลจาก Google Sheets ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตหรือสิทธิ์การเผยแพร่ไฟล์ครับ';
+      els.errorBanner.classList.remove('hidden');
+    }
   }
 }
 
 function getFilteredCourses() {
   const q = els.searchInput.value.trim().toLowerCase();
   const sem = els.filterSemester ? els.filterSemester.value : '';
+  const assignStatus = els.filterAssignStatus ? els.filterAssignStatus.value : '';
   const level = els.filterLevel.value;
   const type = els.filterType.value;
   const plo = els.filterPlo.value;
 
   return state.courses.filter((c) => {
     if (sem && !(c.semesters_list || ['1']).includes(sem)) return false;
+    if (assignStatus === 'COMPLETE' && !c.isAssignmentComplete) return false;
+    if (assignStatus === 'INCOMPLETE' && c.isAssignmentComplete) return false;
     if (level && c.course_id.charAt(3) !== level) return false;
     if (type && !String(c.course_type || '').includes(type)) return false;
     if (plo && !c.ploFlags[plo]) return false;
@@ -492,6 +568,9 @@ function renderCourseGrid() {
       const semBadgeLabel = formatSemesterShort(c.offered_semesters);
       const coordText = formatCardInstructors(c.coordinators, isMultiSem);
       const lectText = formatCardInstructors(c.lecturers, isMultiSem);
+      const assignBadgeHtml = !c.isAssignmentComplete
+        ? `<span class="plo-pill empty" title="ยังระบุผู้รับผิดชอบหรือผู้สอนรายหัวข้อไม่ครบ (${c.unassignedTopicCount} หัวข้อว่าง)">รอระบุผู้สอน</span>`
+        : '';
 
       return `
         <div class="course-card" data-id="${escapeHtml(c.course_id)}">
@@ -501,7 +580,7 @@ function renderCourseGrid() {
           </div>
           <h3 class="card-title-th">${escapeHtml(c.title_th)}</h3>
           <p class="card-title-en">${escapeHtml(c.title_en)}</p>
-          <div class="plo-badges">${ploHtml}</div>
+          <div class="plo-badges">${ploHtml}${assignBadgeHtml}</div>
           <div class="card-meta">
             <div class="meta-row"><strong>ผู้รับผิดชอบ:</strong> ${escapeHtml(coordText)}</div>
             <div class="meta-row"><strong>อาจารย์ผู้สอน:</strong> ${escapeHtml(lectText)}</div>
@@ -590,6 +669,11 @@ function formatInstructorEntries(entries) {
 function openCourseDetail(courseId) {
   state.selectedCourseId = courseId;
   state.selectedDetailSemester = 'ALL';
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('course', courseId);
+    window.history.replaceState({}, '', url.toString());
+  } catch (e) {}
   renderCourseDetail(courseId);
   els.viewCourses.classList.add('hidden');
   els.viewMatrix.classList.add('hidden');
@@ -940,6 +1024,11 @@ function copySyllabusText() {
 function switchMainView(viewName) {
   state.lastMainView = viewName;
   state.selectedCourseId = null;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('course');
+    window.history.replaceState({}, '', url.toString());
+  } catch (e) {}
   els.viewDetail.classList.add('hidden');
 
   if (viewName === 'courses') {
