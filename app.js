@@ -150,6 +150,12 @@ function formatCurriculumBadgeLabel(verRaw) {
   return 'หลักสูตร 69';
 }
 
+function formatRecommendedYearShort(recYRaw) {
+  const y = String(recYRaw || '').trim().toUpperCase();
+  if (!y || y === 'ANY' || y === 'NONE' || y === 'ALL') return '';
+  return `แนะนำปี ${y.replace(/,/g, '/')}`;
+}
+
 function splitInstructorsByRole(rows, fallbackSemKey) {
   const coordMap = new Map();
   const lectMap = new Map();
@@ -609,6 +615,8 @@ function renderCourseGrid() {
       const isMultiSem = (c.semesters_list || []).length > 1;
       const semBadgeLabel = formatSemesterShort(c.offered_semesters);
       const currBadgeLabel = formatCurriculumBadgeLabel(c.curriculum_version);
+      const recYearLabel = formatRecommendedYearShort(c.recommended_year);
+      const recYearSuffix = recYearLabel ? ` • ${escapeHtml(recYearLabel)}` : '';
       const coordText = formatCardInstructors(c.coordinators, isMultiSem);
       const lectText = formatCardInstructors(c.lecturers, isMultiSem);
       const assignBadgeHtml = !c.isAssignmentComplete
@@ -619,7 +627,7 @@ function renderCourseGrid() {
         <div class="course-card" data-id="${escapeHtml(c.course_id)}">
           <div class="card-top">
             <span class="course-id-badge">${escapeHtml(c.course_id)}</span>
-            <span class="credit-tag">${escapeHtml(c.credit_structure)} • ${escapeHtml(c.course_type)} • ${escapeHtml(semBadgeLabel)} • ${escapeHtml(currBadgeLabel)}</span>
+            <span class="credit-tag">${escapeHtml(c.credit_structure)} • ${escapeHtml(c.course_type)} • ${escapeHtml(semBadgeLabel)}${recYearSuffix} • ${escapeHtml(currBadgeLabel)}</span>
           </div>
           <h3 class="card-title-th">${escapeHtml(c.title_th)}</h3>
           <p class="card-title-en">${escapeHtml(c.title_en)}</p>
